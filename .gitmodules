@@ -8,7 +8,8 @@
 	branch = releases/gcc-12
 [submodule "glibc"]
 	path = glibc
-	url = https://sourceware.org/git/glibc.git
+	url = https://github.com/afdw/glibc
+	branch = nommu
 [submodule "dejagnu"]
 	path = dejagnu
 	url = https://git.savannah.gnu.org/git/dejagnu.git
@@ -36,3 +37,7 @@
 	path = pk
 	url = https://github.com/riscv-software-src/riscv-pk.git
 	branch = master
+[submodule "elf2flt"]
+	path = elf2flt
+	url = https://github.com/afdw/elf2flt
+	branch = riscv-fixes

@@ -12,6 +12,7 @@ GDB_SRCDIR := @with_gdb_src@
 QEMU_SRCDIR := @with_qemu_src@
 SPIKE_SRCDIR := @with_spike_src@
 PK_SRCDIR := @with_pk_src@
+ELF2FLT_SRCDIR := @with_elf2flt_src@
 
 SIM ?= @WITH_SIM@
 
@@ -102,7 +103,7 @@ CONFIGURE_HOST   = @configure_host@
 
 all: @default_target@
 newlib: stamps/build-gcc-newlib-stage2
-linux: stamps/build-gcc-linux-stage2
+linux: stamps/build-gcc-linux-stage2 stamps/build-elf2flt-linux
 ifneq (,$(findstring riscv32,$(MUSL_TUPLE)))
 .PHONY: musl
 musl:
@@ -272,6 +273,12 @@ else
 SPIKE_SRC_GIT :=
 endif
 
+ifeq ($(findstring $(srcdir),$(ELF2FLT_SRCDIR)),$(srcdir))
+ELF2FLT_SRC_GIT := $(ELF2FLT_SRCDIR)/.git
+else
+ELF2FLT_SRC_GIT :=
+endif
+
 ifneq ("$(wildcard $(GCC_SRCDIR)/.git)","")
 GCCPKGVER := g$(shell git -C $(GCC_SRCDIR) describe --always --dirty --exclude '*')
 else
@@ -364,14 +371,15 @@ endif
 	cd $(notdir $@) && \
 		CC="$(GLIBC_CC_FOR_TARGET) $($@_CFLAGS)" \
 		CXX="this-is-not-the-compiler-youre-looking-for" \
-		CFLAGS="$(CFLAGS_FOR_TARGET) -g -O2 $($@_CFLAGS)" \
-		CXXFLAGS="$(CXXFLAGS_FOR_TARGET) -g -O2 $($@_CFLAGS)" \
+		CFLAGS="$(CFLAGS_FOR_TARGET) -g -O2 -fPIE $($@_CFLAGS)" \
+		CXXFLAGS="$(CXXFLAGS_FOR_TARGET) -g -O2 -fPIE $($@_CFLAGS)" \
 		ASFLAGS="$(ASFLAGS_FOR_TARGET) $($@_CFLAGS)" \
 		$</configure \
 		--host=$(call make_tuple,$($@_XLEN),linux-gnu) \
 		--prefix=/usr \
 		--disable-werror \
-		--enable-shared \
+		--disable-nscd \
+		--disable-shared \
 		--enable-obsolete-rpc \
 		--with-headers=$(LINUX_HEADERS_SRCDIR) \
 		$(MULTILIB_FLAGS) \
@@ -432,7 +440,8 @@ stamps/build-gcc-linux-stage2: $(GCC_SRCDIR) $(GCC_SRC_GIT) $(addprefix stamps/b
 		--with-sysroot=$(SYSROOT) \
 		--with-pkgversion="$(GCCPKGVER)" \
 		@with_system_zlib@ \
-		--enable-shared \
+		--disable-shared \
+		--disable-threads \
 		--enable-tls \
 		--enable-languages=c,c++,fortran \
 		--disable-libmudflap \
@@ -441,6 +450,7 @@ stamps/build-gcc-linux-stage2: $(GCC_SRCDIR) $(GCC_SRC_GIT) $(addprefix stamps/b
 		$(ENABLE_LIBSANITIZER) \
 		--disable-nls \
 		--disable-bootstrap \
+		--with-static-standard-libraries \
 		--src=$(gccsrcdir) \
 		$(GCC_CHECKING_FLAGS) \
 		$(MULTILIB_FLAGS) \
@@ -448,8 +458,8 @@ stamps/build-gcc-linux-stage2: $(GCC_SRCDIR) $(GCC_SRC_GIT) $(addprefix stamps/b
 		$(WITH_ARCH) \
 		$(WITH_TUNE) \
 		$(WITH_ISA_SPEC) \
-		CFLAGS_FOR_TARGET="-O2 $(CFLAGS_FOR_TARGET)" \
-		CXXFLAGS_FOR_TARGET="-O2 $(CXXFLAGS_FOR_TARGET)"
+		CFLAGS_FOR_TARGET="-O2 -fPIE $(CFLAGS_FOR_TARGET)" \
+		CXXFLAGS_FOR_TARGET="-O2 -fPIE $(CXXFLAGS_FOR_TARGET)"
 	$(MAKE) -C $(notdir $@)
 	$(MAKE) -C $(notdir $@) install
 	cp -a $(INSTALL_DIR)/$(LINUX_TUPLE)/lib* $(SYSROOT)
@@ -505,6 +515,29 @@ stamps/build-gcc-linux-native: $(GCC_SRCDIR) $(GCC_SRC_GIT) stamps/build-gcc-lin
 	$(MAKE) -C $(notdir $@)
 	$(MAKE) -C $(notdir $@) install
 	cp -a $(INSTALL_DIR)/$(LINUX_TUPLE)/lib* $(SYSROOT)
+	mkdir -p $(dir $@) && touch $@
+
+stamps/build-elf2flt-linux: $(ELF2FLT_SRCDIR) $(ELF2FLT_SRC_GIT) stamps/build-gcc-linux-stage2
+	rm -rf $@ $(notdir $@)
+	mkdir $(notdir $@)
+	cd $(notdir $@) && $</configure \
+		--target=$(LINUX_TUPLE) \
+		--with-bfd-include-dir=$(BINUTILS_SRCDIR)/bfd \
+		--with-libbfd=../build-binutils-linux/bfd/libbfd.a \
+		--with-libiberty=../build-binutils-linux/libiberty/libiberty.a \
+		--disable-werror \
+		--enable-emit-ctor-dtor \
+		CFLAGS="-I$(BINUTILS_SRCDIR)/include -O3 -g" \
+		CPPFLAGS="-I$(BINUTILS_SRCDIR)/include -O3 -g"
+	$(MAKE) -C $(notdir $@)
+	cp $(notdir $@)/elf2flt $(INSTALL_DIR)/bin/$(LINUX_TUPLE)-elf2flt
+	cp $(notdir $@)/ld-elf2flt $(INSTALL_DIR)/bin/$(LINUX_TUPLE)-ld-elf2flt
+	cp $(notdir $@)/flthdr $(INSTALL_DIR)/bin/$(LINUX_TUPLE)-flthdr
+	cp $(notdir $@)/elf2flt.ld $(INSTALL_DIR)/$(LINUX_TUPLE)/lib/elf2flt.ld
+	echo -e '*linker:\n$(INSTALL_DIR)/bin/$(LINUX_TUPLE)-ld-elf2flt -elf2flt=-r' > $(INSTALL_DIR)/$(LINUX_TUPLE)/lib/gcc-flat.specs
+	echo -e '#!/bin/sh\n\nexec "$${REALGCC:-$(INSTALL_DIR)/bin/$(LINUX_TUPLE)-gcc}" \
+-static -fPIE "$$@" -specs "$(INSTALL_DIR)/$(LINUX_TUPLE)/lib/gcc-flat.specs"' > $(INSTALL_DIR)/bin/$(LINUX_TUPLE)-gcc-flat
+	chmod +x $(INSTALL_DIR)/bin/$(LINUX_TUPLE)-gcc-flat
 	mkdir -p $(dir $@) && touch $@
 
 #
